@@ -1,0 +1,61 @@
+services:
+  naver-mail-organizer:
+    build:
+      context: ./server
+    image: naver-mail-organizer:0.2.0
+    restart: unless-stopped
+    env_file:
+      - ./server.env
+    volumes:
+      - mail-data:/data
+    ports:
+      - "127.0.0.1:18080:8080"
+    networks:
+      - mail-network
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz',timeout=3).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    profiles: ["tunnel"]
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    env_file:
+      - ./tunnel.env
+    networks:
+      - mail-network
+    depends_on:
+      naver-mail-organizer:
+        condition: service_healthy
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 192m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+networks:
+  mail-network:
+    driver: bridge
+volumes:
+  mail-data:

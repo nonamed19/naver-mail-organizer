@@ -11,6 +11,7 @@ class Fake:
     def response(self,*a): return 'UIDVALIDITY',[b'42']
     def uid(self,*args):
         self.calls.append(args)
+        if args[0]=='FETCH' and args[2]=='(RFC822.SIZE)': return 'OK',[b'1 (RFC822.SIZE 150)']
         if args[0]=='FETCH': return 'OK',[(b'1 (UID 7 FLAGS ('+(b'\\Seen \\Flagged' if self.seen else b'\\Flagged')+b') BODY[] {100}',b'From: sender@example.org\r\nSubject: Test\r\n\r\nhello')]
         if args[0]=='SEARCH': return 'OK',[b'7']
         return 'OK',[b'done']
@@ -47,13 +48,20 @@ class Tests(unittest.TestCase):
     def test_peek(self):
         f=Fake()
         with patch.object(s,'connect',return_value=f): s.dispatch('naver_read_message',{'handle':self.handle()})
-        self.assertIn('BODY.PEEK[]',f.calls[0][2])
+        self.assertIn('BODY.PEEK[]',f.calls[1][2])
     def test_unsupported_move(self):
         f=Fake(); f.capabilities=(b'IMAP4rev1',)
         with patch.object(s,'connect',return_value=f),self.assertRaises(ValueError): s.dispatch('naver_move_read_inbox',{'handle':self.handle(),'destination':'Work'})
     def test_pagination(self):
         with patch.object(s,'connect',return_value=Fake()):
             self.assertEqual(s.dispatch('naver_list_read_inbox',{'after_uid':7})['messages'],[])
+    def test_large_body_is_not_downloaded(self):
+        f=Fake()
+        with patch.dict(os.environ,{'NAVER_MAX_MESSAGE_BYTES':'10'}),patch.object(s,'connect',return_value=f),self.assertRaises(ValueError):
+            s.dispatch('naver_read_message',{'handle':self.handle()})
+        self.assertFalse(any('BODY.PEEK[]' in str(c) for c in f.calls))
+    def test_invalid_rpc(self):
+        self.assertEqual(s.rpc([])['error']['code'],-32600)
     def test_tools(self):
         tools=s.rpc({'id':1,'method':'tools/list'})['result']['tools']
         self.assertEqual(len(tools),6)

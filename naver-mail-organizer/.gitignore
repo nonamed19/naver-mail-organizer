@@ -1,0 +1,8 @@
+server.env
+tunnel.env
+.env
+**/.env
+**/__pycache__/
+*.sqlite3
+*.sqlite3-*
+mcp.json

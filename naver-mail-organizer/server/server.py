@@ -1,5 +1,5 @@
 """Private, single-owner Naver IMAP MCP bridge. Python 3.11+, stdlib only."""
-import base64, email, hashlib, hmac, imaplib, json, os, re, secrets, sqlite3, ssl, threading
+import base64, email, hashlib, hmac, imaplib, json, os, re, sqlite3, ssl, threading
 from email import policy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -82,6 +82,14 @@ def unpack(handle):
     return obj
 
 def fetch(c,uid,body=False):
+    if body:
+        size_data=check(c.uid('FETCH',str(uid),'(RFC822.SIZE)'))
+        size_blob=b' '.join(x for x in size_data if isinstance(x,bytes))
+        size_match=re.search(rb'RFC822.SIZE (\d+)',size_blob)
+        if not size_match:
+            raise ValueError('Message size unavailable; body not fetched')
+        if int(size_match[1])>int(os.environ.get('NAVER_MAX_MESSAGE_BYTES','5242880')):
+            raise ValueError('Message exceeds body download limit; leave in INBOX for manual review')
     query='(UID FLAGS BODY.PEEK[])' if body else '(UID FLAGS BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE MESSAGE-ID)])'
     data=check(c.uid('FETCH',str(uid),query)); pair=next((x for x in data if isinstance(x,tuple)),None)
     if not pair: raise ValueError('Message no longer exists')
@@ -151,9 +159,11 @@ def dispatch(name,args):
         except Exception: pass
 
 def rpc(req):
+    if not isinstance(req,dict):
+        return {'jsonrpc':'2.0','id':None,'error':{'code':-32600,'message':'Invalid Request'}}
     method=req.get('method'); ident=req.get('id')
     if method=='server/discover': result={'supportedVersions':['2026-07-28'],'capabilities':{'tools':{}}}
-    elif method=='initialize': result={'protocolVersion':req.get('params',{}).get('protocolVersion','2025-03-26'),'capabilities':{'tools':{}},'serverInfo':{'name':'naver-mail-organizer','version':'0.1.0'}}
+    elif method=='initialize': result={'protocolVersion':req.get('params',{}).get('protocolVersion','2025-03-26'),'capabilities':{'tools':{}},'serverInfo':{'name':'naver-mail-organizer','version':'0.2.0'}}
     elif method=='ping': result={}
     elif method=='tools/list':
         result={'tools':[{'name':n,'description':d,'inputSchema':{'type':'object','properties':p,'required':REQUIRED.get(n,[]),'additionalProperties':False},'annotations':{'readOnlyHint':n!='naver_move_read_inbox','destructiveHint':n=='naver_move_read_inbox','openWorldHint':True}} for n,d,p in TOOLS]}
@@ -170,6 +180,16 @@ def rpc(req):
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self,*args): pass
+    def setup(self):
+        super().setup()
+        self.connection.settimeout(30)
+    def do_GET(self):
+        if self.path=='/healthz':
+            raw=b'{"status":"ok"}'
+            self.send_response(200); self.send_header('Content-Type','application/json'); self.send_header('Content-Length',str(len(raw))); self.end_headers(); self.wfile.write(raw)
+        elif self.path=='/mcp':
+            self.send_response(405); self.send_header('Allow','POST'); self.end_headers()
+        else: self.send_error(404)
     def do_POST(self):
         if self.path!='/mcp': self.send_error(404); return
         expected='Bearer '+secret('MCP_API_TOKEN')
@@ -183,5 +203,13 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError,KeyError,TypeError): self.send_error(400)
 
 if __name__=='__main__':
-    secret('MCP_API_TOKEN'); secret('NAVER_HANDLE_KEY')
+    for key in ('MCP_API_TOKEN','NAVER_HANDLE_KEY'):
+        value=secret(key)
+        if len(value)<32 or value.startswith('REPLACE_'):
+            raise SystemExit(key+' must be replaced with a random secret of at least 32 characters')
+    for key in ('NAVER_USER','NAVER_APP_PASSWORD','NAVER_CLASSIFICATION_FOLDERS'):
+        if secret(key).startswith('REPLACE_'):
+            raise SystemExit(key+' requires configuration')
+    with database() as db: db.execute('SELECT 1')
+    print('Naver mail bridge 0.2.0 started; move_enabled='+str(os.environ.get('NAVER_ALLOW_MOVE')=='true'),flush=True)
     ThreadingHTTPServer((os.environ.get('MCP_BIND','127.0.0.1'),int(os.environ.get('PORT','8080'))),Handler).serve_forever()
