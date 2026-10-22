@@ -1,0 +1,8 @@
+FROM python:3.12-slim
+WORKDIR /app
+COPY server.py /app/server.py
+RUN useradd --uid 10001 --create-home mailbridge && mkdir /data && chown mailbridge /data
+USER mailbridge
+ENV MCP_BIND=0.0.0.0 PORT=8080 NAVER_AUDIT_DB=/data/audit.sqlite3
+EXPOSE 8080
+CMD ["python", "server.py"]
