@@ -22,7 +22,7 @@ from email import policy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = '0.3.0'
+VERSION = '0.4.0'
 LOCK = threading.Lock()
 MAX_LIST = 200
 MAX_MOVE = 50
@@ -44,6 +44,9 @@ TOOLS = [
             'type': 'object', 'properties': {'handle': {'type': 'string'}, 'destination': {'type': 'string'}},
             'required': ['handle', 'destination'], 'additionalProperties': False}},
         'dry_run': {'type': 'boolean'}}),
+    ('naver_move_read_inbox_to_spam_batch', 'Move up to 50 read INBOX advertisements to the existing spam mailbox only. Classify from subject/body first. No spam report, block or unsubscribe. dry_run defaults true.', {
+        'handles': {'type': 'array', 'minItems': 1, 'maxItems': MAX_MOVE, 'items': {'type': 'string'}},
+        'dry_run': {'type': 'boolean'}}),
     ('naver_verify_moves', 'Read-only IMAP reconciliation of up to 50 previously journaled moves. Does not execute MOVE or repair flags.', {
         'handles': {'type': 'array', 'minItems': 1, 'maxItems': MAX_MOVE, 'items': {'type': 'string'}}}),
     ('naver_get_move_results', 'Read durable move results after an operation ID. Includes legacy unverified history, no mailbox mutation.', {
@@ -52,8 +55,8 @@ TOOLS = [
     ('naver_status', 'Connection capabilities, batching and verification support, without credentials.', {})]
 REQUIRED = {'naver_read_message': ['handle'], 'naver_read_messages': ['handles'],
             'naver_sample_folder': ['folder'], 'naver_move_read_inbox': ['handle', 'destination'],
-            'naver_move_read_inbox_batch': ['items'], 'naver_verify_moves': ['handles']}
-WRITE_TOOLS = {'naver_move_read_inbox', 'naver_move_read_inbox_batch'}
+            'naver_move_read_inbox_to_spam_batch': ['handles'], 'naver_move_read_inbox_batch': ['items'], 'naver_verify_moves': ['handles']}
+WRITE_TOOLS = {'naver_move_read_inbox', 'naver_move_read_inbox_batch', 'naver_move_read_inbox_to_spam_batch'}
 
 
 def secret(name):
@@ -191,6 +194,35 @@ class ConnectionPool:
 POOL = ConnectionPool()
 
 
+def spam_mailbox(conn):
+    """Resolve an existing selectable mailbox; never guess localized names or create."""
+    configured = os.environ.get('NAVER_SPAM_FOLDER', '')
+    junk, explicit = [], []
+    for row in check(conn.list()):
+        if not isinstance(row, bytes):
+            continue
+        match = re.match(rb'\(([^)]*)\)\s+(?:"[^"]*"|NIL)\s+(.+)$', row)
+        if not match:
+            continue
+        flags = set(match[1].lower().split())
+        raw = match[2].decode('ascii')
+        if raw.startswith('"') and raw.endswith('"'):
+            raw = re.sub(r'\\(.)', r'\1', raw[1:-1])
+        name = decode_folder(raw)
+        if (name.casefold() in {'inbox', 'trash', 'sent', 'drafts', '휴지통', '보낸메일함', '임시보관함', '받은메일함'}
+                or flags & {b'\\noselect', b'\\trash', b'\\sent', b'\\drafts', b'\\all', b'\\archive'}):
+            continue
+        if name == configured:
+            explicit.append(name)
+        if b'\\junk' in flags:
+            junk.append(name)
+    if configured:
+        return {'folder': explicit[0] if len(explicit) == 1 else None,
+                'reason': None if len(explicit) == 1 else 'configured_spam_folder_missing_or_protected'}
+    return {'folder': junk[0] if len(junk) == 1 else None,
+            'reason': None if len(junk) == 1 else 'set_NAVER_SPAM_FOLDER_to_exact_existing_mailbox'}
+
+
 def folders(conn):
     allowed = json.loads(secret('NAVER_CLASSIFICATION_FOLDERS'))
     if not isinstance(allowed, list) or not all(isinstance(x, str) for x in allowed):
@@ -207,7 +239,7 @@ def folders(conn):
         if raw.startswith('"') and raw.endswith('"'):
             raw = re.sub(r'\\(.)', r'\1', raw[1:-1])
         name = decode_folder(raw)
-        if name.casefold() in blocked or any(x in flags for x in
+        if name == os.environ.get('NAVER_SPAM_FOLDER', '') or name.casefold() in blocked or any(x in flags for x in
                 [b'\\noselect', b'\\sent', b'\\drafts', b'\\trash', b'\\junk', b'\\all', b'\\archive']):
             continue
         if name in allowed:
@@ -703,12 +735,17 @@ def dispatch_connected(conn, name, args):
     if name == 'naver_list_folders':
         return {'folders': fs, 'system_folders_excluded': True}
     if name == 'naver_status':
+        spam = spam_mailbox(conn)
         return {'connected': True, 'server_version': VERSION, 'classification_folders': fs,
                 'move_enabled': os.environ.get('NAVER_ALLOW_MOVE') == 'true',
                 'uid_move_supported': b'MOVE' in conn.capabilities,
                 'read_only_until_enabled': os.environ.get('NAVER_ALLOW_MOVE') != 'true',
                 'batch_list_limit': MAX_LIST, 'batch_move_limit': MAX_MOVE,
-                'post_move_verification': True, 'durable_move_journal': True}
+                'post_move_verification': True, 'durable_move_journal': True,
+                'spam_folder': spam['folder'], 'spam_folder_error': spam['reason'],
+                'spam_move_enabled': os.environ.get('NAVER_ALLOW_SPAM_MOVE') == 'true'
+                    and os.environ.get('NAVER_ALLOW_MOVE') == 'true' and spam['folder'] is not None,
+                'spam_scope': 'read_INBOX_only', 'spam_report_supported': False}
     if name in {'naver_list_read_inbox', 'naver_sample_folder'}:
         is_candidate = name == 'naver_list_read_inbox'
         folder = 'INBOX' if is_candidate else args['folder']
@@ -756,6 +793,9 @@ def dispatch_connected(conn, name, args):
                 out.append({'handle': handle if isinstance(handle, str) else None, 'status': 'error', 'error': safe_error(exc)})
         return out[0]['message'] if name == 'naver_read_message' else {'results': out}
     if name == 'naver_verify_moves':
+        spam = spam_mailbox(conn)['folder']
+        if spam:
+            fs = [*fs, spam]
         handles = list_arg(args, 'handles', MAX_MOVE)
         with LOCK, audit() as db:
             results, indexed = {}, []
@@ -776,6 +816,18 @@ def dispatch_connected(conn, name, args):
                 for index, row in indexed:
                     results[index] = verification_error_result(db, row, exc)
             return summarize([dict(results[index], index=index) for index in range(len(handles))])
+    if name == 'naver_move_read_inbox_to_spam_batch':
+        handles = list_arg(args, 'handles', MAX_MOVE)
+        spam = spam_mailbox(conn)
+        if spam['folder'] is None:
+            raise ValueError(spam['reason'])
+        dry_run = args.get('dry_run', True)
+        if type(dry_run) is not bool:
+            raise ValueError('dry_run must be a boolean')
+        if not dry_run and os.environ.get('NAVER_ALLOW_SPAM_MOVE') != 'true':
+            raise ValueError('Spam moves disabled; set NAVER_ALLOW_SPAM_MOVE=true after preview validation')
+        return move_batch(conn, [spam['folder']], {'items': [
+            {'handle': handle, 'destination': spam['folder']} for handle in handles], 'dry_run': dry_run})
     if name == 'naver_move_read_inbox':
         batch = move_batch(conn, fs, {'items': [{'handle': args['handle'], 'destination': args['destination']}], 'dry_run': False})
         return dict(batch['results'][0], newly_verified_count=batch['newly_verified_count'])

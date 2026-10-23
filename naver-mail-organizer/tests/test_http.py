@@ -48,9 +48,19 @@ class HttpOnly(unittest.TestCase):
             self.post({'method': 'tools/list'}, path='/')
         self.assertEqual(ctx.exception.code, 404)
 
+    def test_spam_tool_http_roundtrip(self):
+        self.fixture.setup_spam()
+        tools = self.post({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'})['result']['tools']
+        spam_tool = next(t for t in tools if t['name'] == 'naver_move_read_inbox_to_spam_batch')
+        self.assertFalse(spam_tool['annotations']['readOnlyHint'])
+        handles = [self.fixture.handle(1), self.fixture.handle(2)]
+        self.assertTrue(self.call('naver_move_read_inbox_to_spam_batch', {'handles': handles})['dry_run'])
+        self.assertEqual(self.call('naver_move_read_inbox_to_spam_batch', {'handles': handles, 'dry_run': False})['newly_verified_count'], 2)
+        self.assertEqual(self.call('naver_verify_moves', {'handles': handles})['verified_count'], 2)
+
     def test_tool_discovery_and_batch_roundtrip(self):
         tools = self.post({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'})['result']['tools']
-        self.assertEqual(len(tools), 10)
+        self.assertEqual(len(tools), 11)
         listed = self.call('naver_list_read_inbox', {'limit': 100})
         item = {'handle': listed['messages'][0]['handle'], 'destination': 'Work'}
         preview = self.call('naver_move_read_inbox_batch', {'items': [item]})

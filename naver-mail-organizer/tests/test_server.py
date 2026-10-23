@@ -371,7 +371,7 @@ class Tests(unittest.TestCase):
 
     def test_tools_annotations_and_bad_rpc(self):
         tools = s.rpc({'id': 1, 'method': 'tools/list'})['result']['tools']
-        self.assertEqual(len(tools), 10)
+        self.assertEqual(len(tools), 11)
         self.assertTrue(all(tool['inputSchema']['additionalProperties'] is False for tool in tools))
         for tool in tools:
             self.assertEqual(tool['annotations']['readOnlyHint'], tool['name'] not in s.WRITE_TOOLS)
@@ -464,6 +464,85 @@ class Tests(unittest.TestCase):
         self.assertEqual(s.expand_uids(b'1,3:5'), ['1', '3', '4', '5'])
         with self.assertRaises(ValueError):
             s.expand_uids(b'1:9999999999')
+
+
+    def setup_spam(self, rows=None):
+        self.fake.boxes['SpamBox'] = {}
+        self.fake.validity['SpamBox'] = '90'
+        self.fake.next_uid['SpamBox'] = 300
+        original = self.fake.list
+        self.fake.list = lambda: ('OK', original()[1] + (rows if rows is not None else [b'(\\Junk) "/" "SpamBox"']))
+        os.environ['NAVER_ALLOW_SPAM_MOVE'] = 'true'
+        os.environ.pop('NAVER_SPAM_FOLDER', None)
+
+    def spam(self, *uids, **kwargs):
+        return s.dispatch('naver_move_read_inbox_to_spam_batch', {'handles': [self.handle(uid) for uid in uids], **kwargs})
+
+    def test_spam_preview_and_fixed_destination(self):
+        self.setup_spam()
+        preview = self.spam(1, 2)
+        self.assertTrue(preview['dry_run'])
+        self.assertFalse(self.commands('MOVE'))
+        result = self.spam(1, 2, dry_run=False)
+        self.assertEqual(result['newly_verified_count'], 2)
+        self.assertTrue(all(r['destination'] == 'SpamBox' and r['verified'] for r in result['results']))
+        self.assertEqual(len(self.commands('MOVE')), 1)
+        self.assertEqual(len(self.fake.boxes['Work']), 0)
+        verified = s.dispatch('naver_verify_moves', {'handles': [self.handle(1), self.handle(2)]})
+        self.assertEqual(verified['verified_count'], 2)
+        self.spam(1, dry_run=False)
+        self.assertEqual(len(self.commands('MOVE')), 1)
+
+    def test_spam_requires_separate_enable_and_read_candidates(self):
+        self.setup_spam()
+        os.environ['NAVER_ALLOW_SPAM_MOVE'] = 'false'
+        self.spam(1)
+        with self.assertRaises(ValueError):
+            self.spam(1, dry_run=False)
+        os.environ['NAVER_ALLOW_SPAM_MOVE'] = 'true'
+        self.fake.boxes['INBOX']['1']['flags'] = []
+        self.assertEqual(self.spam(1, dry_run=False)['results'][0]['status'], 'rejected')
+        with self.assertRaises(ValueError):
+            s.dispatch('naver_move_read_inbox_to_spam_batch', {'handles': [self.handle()], 'destination': 'Work'})
+        self.assertFalse(self.commands('MOVE'))
+
+    def test_spam_missing_ambiguous_and_explicit_resolution(self):
+        self.setup_spam(rows=[])
+        self.assertIsNone(s.spam_mailbox(self.fake)['folder'])
+        with self.assertRaises(ValueError):
+            self.spam(1, dry_run=False)
+        self.setup_spam(rows=[b'(\\Junk) "/" "SpamBox"', b'(\\Junk) "/" "OtherJunk"'])
+        self.assertIsNone(s.spam_mailbox(self.fake)['folder'])
+        os.environ['NAVER_SPAM_FOLDER'] = 'SpamBox'
+        self.assertEqual(s.spam_mailbox(self.fake)['folder'], 'SpamBox')
+        os.environ['NAVER_SPAM_FOLDER'] = 'INBOX'
+        self.assertIsNone(s.spam_mailbox(self.fake)['folder'])
+        self.assertFalse(self.commands('MOVE'))
+
+    def test_spam_explicit_name_without_junk_flag(self):
+        self.setup_spam(rows=[b'(\\HasNoChildren) "/" "SpamBox"'])
+        os.environ['NAVER_SPAM_FOLDER'] = 'SpamBox'
+        os.environ['NAVER_CLASSIFICATION_FOLDERS'] = '["SpamBox","Work"]'
+        self.assertEqual(s.folders(self.fake), ['Work'])
+        status = s.dispatch('naver_status', {})
+        self.assertTrue(status['spam_move_enabled'])
+        self.assertFalse(status['spam_report_supported'])
+        rejected = s.dispatch('naver_move_read_inbox_batch', {'items': self.items(1, dest='SpamBox'), 'dry_run': False})
+        self.assertEqual(rejected['results'][0]['status'], 'rejected')
+        self.assertEqual(self.spam(1, dry_run=False)['newly_verified_count'], 1)
+
+    def test_spam_flags_lost_and_disconnect_reconcile(self):
+        self.setup_spam()
+        self.fake.mode = 'flags_lost'
+        self.assertEqual(self.spam(1, dry_run=False)['results'][0]['status'], 'verification_failed')
+        self.fake.mode = 'disconnect'
+        result = self.spam(2, dry_run=False)
+        self.assertFalse(result['results'][0]['verified'])
+        self.pooled._discard = False
+        self.fake.mode = 'normal'
+        recovered = s.dispatch('naver_verify_moves', {'handles': [self.handle(2)]})
+        self.assertEqual(recovered['verified_count'], 1)
+        self.assertEqual(len(self.commands('MOVE')), 2)
 
 
 class PoolTests(unittest.TestCase):
