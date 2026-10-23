@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "naver-mail-organizer",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "네이버 읽은 메일 분류 지침과 IMAP MCP 연결 서버 소스. 실제 메일 처리는 별도 서버 연결 후 사용합니다.",
   "author": {
     "name": "Example Developer"

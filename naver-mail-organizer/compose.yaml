@@ -2,7 +2,7 @@ services:
   naver-mail-organizer:
     build:
       context: ./server
-    image: naver-mail-organizer:0.2.0
+    image: naver-mail-organizer:0.3.0
     restart: unless-stopped
     env_file:
       - ./server.env

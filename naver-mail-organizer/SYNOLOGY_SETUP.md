@@ -1,6 +1,8 @@
+> 기존 0.2.0에서 업데이트한다면 먼저 [UPGRADE_0.3.0.md](UPGRADE_0.3.0.md)를 확인하세요. 기존 비밀 설정과 볼륨을 유지해야 합니다.
+
 # Synology NAS + Cloudflared 배포 안내
 
-이 안내는 0.2.0 패키지 기준입니다. 실제 NAS를 원격 조작하거나 네이버 계정으로 로그인한 결과가 아닙니다. 로컬 로직·HTTP 검증을 완료했으며 Docker 빌드, NAS 실행, Cloudflare 연결, ChatGPT 예약은 각 단계에서 확인해야 합니다.
+이 안내는 0.3.0 패키지 기준입니다. 실제 NAS를 원격 조작하거나 네이버 계정으로 로그인한 결과가 아닙니다. 모의 IMAP·로컬 HTTP 검증을 완료했으며 Docker 빌드, NAS 실행, Cloudflare 연결, ChatGPT 예약은 각 단계에서 확인해야 합니다.
 
 ## 1. 준비
 
@@ -76,7 +78,7 @@ sudo docker compose logs --tail=50 naver-mail-organizer
 
 compose 하위 명령이 없으면 `sudo docker-compose version`을 확인하고, 지원되는 경우 이후 `docker compose`를 `docker-compose`로 바꿔 사용합니다. 둘 다 없으면 Container Manager 설치/업데이트를 먼저 확인합니다.
 
-정상 로그: Naver mail bridge 0.2.0 started; move_enabled=False
+정상 로그: Naver mail bridge 0.3.0 started; move_enabled=False
 
 ## 5. 프로세스·메일 연결 검사
 
@@ -87,7 +89,7 @@ sudo docker compose exec naver-mail-organizer python /app/probe.py tools
 sudo docker compose exec naver-mail-organizer python /app/probe.py status
 ```
 
-- tools: 6개 MCP 도구가 출력되는지 확인. 네이버 접속 자체는 하지 않습니다.
+- tools: 10개 MCP 도구가 출력되는지 확인. 네이버 접속 자체는 하지 않습니다.
 - status: connected=true, move_enabled=false, 실제 분류 메일함 목록 확인.
 - uid_move_supported=true여야 이 구현에서 메일 이동이 가능합니다. false면 COPY+삭제로 우회하지 말고 구현/서버 호환성을 추가 검토하세요.
 - 분류함 목록이 비어 있으면 실제 이름과 NAVER_CLASSIFICATION_FOLDERS가 일치하는지 확인합니다. 시스템 메일함은 의도적으로 제외합니다.
@@ -154,7 +156,7 @@ sudo docker compose up -d --force-recreate naver-mail-organizer
 
 단순 restart만으로 env_file 변경이 적용되지는 않습니다. GUI에서는 환경 변경이 반영되도록 프로젝트를 재생성/재빌드합니다.
 
-검증용 읽은 메일 한 건만 이동시키고 네이버 웹에서 읽음·별표·중요 표시 보존을 확인합니다. 그 후 매일 오전 9시 Asia/Seoul 예약을 생성합니다. NAS 자체 예약 작업은 별도로 만들지 않습니다. 서버는 메일을 직접 AI 분류하지 않고 ChatGPT 도구 호출을 기다립니다.
+읽은 메일 중 별표가 있는 메일과 없는 메일을 소수 선택해 일괄 이동 dry_run으로 확인한 뒤 실제 이동합니다. status=verified와 원본 부재·목적지 동일성·Seen/Flagged 보존을 확인하고 네이버 웹에서도 대조합니다. pending/unresolved/verification_failed가 있으면 신규 이동을 중단하고 naver_verify_moves로 재검증합니다. 예약은 사용자가 요청했고 예약 환경의 도구 접근·권한과 소량 검증이 실제 확인된 경우에만 생성합니다. NAS 자체 예약 작업은 별도로 만들지 않습니다. 서버는 메일을 직접 AI 분류하지 않고 ChatGPT 도구 호출을 기다립니다.
 
 ## 8. 자주 발생하는 문제
 
@@ -177,4 +179,4 @@ sudo docker compose up -d --force-recreate naver-mail-organizer
 - 컨테이너 restart: unless-stopped는 프로세스 종료 복구용입니다. unhealthy 상태만으로 자동 재시작되지는 않습니다.
 - named volume을 유지하세요. `docker compose down -v`는 감사 이력 볼륨을 지우므로 사용하지 마세요.
 - cloudflared:latest는 최초 편의용입니다. 정상 동작을 확인한 뒤 검증한 버전/다이제스트로 고정하고 계획적으로 업데이트하는 것을 권합니다.
-- NAS 로컬 메일 데이터 전체를 이 서버로 동기화하지 않습니다. 본문은 호출 시 읽고, 처리 이력만 저장합니다.
+- NAS 로컬 메일 데이터 전체를 이 서버로 동기화하지 않습니다. 본문은 호출 시 읽고, 검증용 헤더·크기 지문, UID, 플래그와 처리 이력을 저장합니다. 본문 전문은 DB에 저장하지 않습니다.

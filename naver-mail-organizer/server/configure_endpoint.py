@@ -12,7 +12,7 @@ req=urllib.request.Request(endpoint,data=json.dumps({'jsonrpc':'2.0','id':1,'met
 try:
     with urllib.request.urlopen(req,timeout=30) as r: obj=json.load(r)
     names={x['name'] for x in obj['result']['tools']}
-    if not {'naver_status','naver_move_read_inbox','naver_sample_folder','naver_list_read_inbox','naver_read_message','naver_list_folders'}<=names: raise ValueError('Expected tools missing')
+    if not {'naver_status','naver_move_read_inbox','naver_sample_folder','naver_list_read_inbox','naver_read_message','naver_list_folders','naver_read_messages','naver_move_read_inbox_batch','naver_verify_moves','naver_get_move_results'}<=names: raise ValueError('Expected tools missing')
 except Exception:
     raise SystemExit('Endpoint verification failed. No MCP configuration was written.')
 config={'$schema':'https://agent-plugins.org/schemas/1.0.0/mcp.schema.json','mcpServers':{'naver-mail':{'type':'streamable-http','url':endpoint,'extensions':{'com.openai':{'auth':{'type':'api_key','headerScheme':'bearer'}}}}}}
